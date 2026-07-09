@@ -1,0 +1,10 @@
+{
+  "name": "nofruit-pi-package",
+  "private": true,
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"],
+    "themes": ["./themes"]
+  }
+}
