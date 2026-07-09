@@ -34,14 +34,15 @@ def search_single(name: str, query: str, max_results: int) -> tuple[str, list[di
 
 
 def main():
+    prog = os.path.basename(sys.argv[0]) or "search"
     parser = argparse.ArgumentParser(
         description="Multi-engine search tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             f"Available engines: {', '.join(list_engines())}\n"
             "Examples:\n"
-            '  search.exe "transformer attention" --engines arxiv\n'
-            '  search.exe "python httpx" --engines duckduckgo,github\n'
+            f'  {prog} "transformer attention" --engines arxiv\n'
+            f'  {prog} "python httpx" --engines duckduckgo,github\n'
         ),
     )
     parser.add_argument("query", help="Search query")

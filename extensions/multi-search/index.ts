@@ -54,22 +54,16 @@ export default function (pi: ExtensionAPI) {
       // it resolves with code=1 and empty stdout, which would produce
       // an unhelpful "(see attached image)" instead of a clear error).
       if (!existsSync(binaryPath)) {
-        const platform = process.platform;
-        const setupScript =
-          platform === "win32" ? "./setup.bat" :
-          platform === "linux" || platform === "darwin" ? "bash setup.sh" :
-          `setup.bat (Windows) / bash setup.sh (Unix)  (unsupported platform: ${platform})`;
         return {
           content: [
             {
               type: "text",
               text: `Search binary not found: ${binaryPath}
 
-System: ${platform}
-Run \`${setupScript}\` in the extension directory to build dist/search(.exe).`,
+Run \`bash setup.sh\` in the extension directory to build dist/search(.exe).`,
             },
           ],
-          details: { reason: "binary_not_found", platform },
+          details: { reason: "binary_not_found" },
         };
       }
 

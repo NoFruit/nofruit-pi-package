@@ -10,15 +10,11 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from lxml import html
 
 from engines.base import EngineBase
-from http_client import get_client
+from http_client import get_client, DEFAULT_UA
 from utils import extract_text
 
 BING_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": DEFAULT_UA,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Sec-Fetch-Dest": "document",
