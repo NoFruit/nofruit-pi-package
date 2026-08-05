@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "C:/Users/Ma/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent"
+      ],
+      "@earendil-works/pi-ai": [
+        "C:/Users/Ma/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai"
+      ],
+      "@earendil-works/pi-tui": [
+        "C:/Users/Ma/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui"
+      ],
+      "typebox": [
+        "C:/Users/Ma/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/typebox"
+      ]
+    },
+    "typeRoots": [
+      "C:/Users/Ma/AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent/node_modules/@types"
+    ]
+  },
+  "include": ["extensions"]
+}
