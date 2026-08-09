@@ -1,25 +1,30 @@
 // 定位：把 xng（searxng）源码仓库拉到本机 pi 的 cache 目录。blobless clone（--filter=blob:none）：
-// tree 全量、blob 按需懒拉取，依赖仓库内持久化的 http.proxy（clone -c 写入）供后续 git 命令走代理。
-// 默认机器已有 git；SSH 连接可行性不做验证，拉取失败统一抛错。
+// tree 全量、blob 按需懒拉取（clone -c 持久化连接配置进仓库 config）。默认机器已有 git；拉取失败统一抛错。
 // xng 上游 utils/templates 下存在 Windows 无法检出的路径（含 : 的文件名与符号链接），
 // 用 sparse 黑名单排除（/* 全量 + 排除 SPARSE_BLACKLIST）。
 //
 // 对外接口：createXngGit(exec) 返回基础积木；exec 形如 pi.exec：
 //   exec(cmd, args, opts?) -> Promise<{ stdout, stderr, code }>
-//   pullXng(cacheDir?)  -> Promise<string>  https（7890 代理）→ ssh 顺序尝试，blobless clone（--no-checkout）到 cache；失败抛错
+//   pullXng(cacheDir?)  -> Promise<string>  blobless clone（--no-checkout）到 cache；失败如实抛出
 //   updateXng(cacheDir?) -> Promise<string>  与 origin 同步（fetch + ff-only 快进，走仓库内持久化代理）；git 报错仅抛出
 //   checkoutXng(cacheDir?) -> Promise<string>  纯修复：checkout -f 默认分支，强制工作树与仓库一致（丢弃本地改动；无网络依赖）；git 报错仅抛出
 //   setupSparse(cacheDir?)   -> Promise<string>  配置 sparse 黑名单（/* 全量、排除 SPARSE_BLACKLIST）；失败抛错
 //   hasXngGit(cacheDir?)      -> Promise<boolean> 预期位置是否是健康 git 工作树；否则 false
-//   isXngClean(cacheDir?)     -> Promise<boolean> 工作区是否与 xng 版本一致（无改动/未跟踪文件）
-// cacheDir 缺省 ~/.pi/cache；仓库落在 <cacheDir>/pi-searxng/searxng
+//   isXngClean(cacheDir?)     -> Promise<boolean> tracked 是否与 xng 版本一致（无改动/无删除；未跟踪文件忽略）
+//   hasXngSparse(cacheDir?)   -> Promise<boolean> sparse-checkout 是否已激活（黑名单已配）；否则 false
+//   newerXngAvailable(cacheDir?) -> Promise<boolean> 上游 origin HEAD 与本地不同；检查失败视为无新版
+//   initXng(cacheDir?)         -> Promise<XngResult> 编排：幂等初始化。已存在跳过；否则 pull → setupSparse（不物化）；失败抛错
+//   fixXng(cacheDir?)          -> Promise<XngResult> 编排：修复已存在的仓库，按需 setupSparse / checkout -f / update（ff-only）；本地修复失败返回 ok:false
+// cacheDir 缺省 ~/.pi/cache；仓库落在 <cacheDir>/searxng-server/searxng
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 
-const XNG_URL = "git@github.com:searxng/searxng.git";
-const XNG_HTTPS_URL = "https://github.com/searxng/searxng.git";
-const XNG_PROXY = "http://127.0.0.1:7890";
+// 连接默认值：gitee 镜像
+const XNG_REMOTE = "https://gitee.com/mirrors/SearXNG.git";
+// 代理默认值：空 = 不强制代理
+const XNG_PROXY = "";
 // sparse 黑名单：win 无法检出的路径（含 : 的文件名、符号链接），后续按需追加
 const SPARSE_BLACKLIST = [
 	"utils/templates/etc/httpd/sites-available/searxng.conf:socket",
@@ -28,12 +33,30 @@ const SPARSE_BLACKLIST = [
 	"utils/templates/etc/uwsgi/apps-available/searxng.ini:socket",
 	"utils/templates/etc/apache2",
 ];
-const REPO_REL = join("pi-searxng", "searxng");
+const REPO_REL = join("searxng-server", "searxng");
 
+// 仓库位置约定：<cacheDir>/searxng-server/searxng（模块级共享，xng-py 等依赖它）
+export function xngRepoDir(cacheDir?: string): string {
+	return join(cacheDir ?? defaultCacheDir(), REPO_REL);
+}
+
+function defaultCacheDir(): string {
+	return join(homedir(), ".pi", "cache");
+}
 export interface ExecResult {
 	stdout: string;
 	stderr: string;
 	code: number;
+}
+
+export interface XngResult {
+	ok: boolean;
+	repoDir: string;
+	actions: string[];
+	/** 非致命提示（已存在跳过、本地已修复但同步失败等） */
+	note?: string;
+	/** 修复失败原因（ok=false 时给出） */
+	reason?: string;
 }
 
 export type ExecFn = (
@@ -43,29 +66,16 @@ export type ExecFn = (
 ) => Promise<ExecResult>;
 
 export function createXngGit(exec: ExecFn) {
-	return { pullXng, updateXng, checkoutXng, setupSparse, hasXngGit, isXngClean };
+	return { pullXng, updateXng, checkoutXng, setupSparse, hasXngGit, isXngClean, initXng, fixXng, hasXngSparse, newerXngAvailable };
 
-	// 拉取：https（7890 代理）与 ssh 顺序尝试——重试在主流程内完成，catch 只收拢失败原因；均失败抛汇总错误
-	// --filter=blob:none 只拉 tree 不拉 blob；--no-checkout 不物化工作树（坏路径留到 sparse/checkout 阶段处理）
+	// 拉取：blobless clone（--no-checkout）下载 git 头到 cache，不物化工作树；出错如实抛出
 	async function pullXng(cacheDir?: string): Promise<string> {
 		const repoDir = xngRepoDir(cacheDir);
-		const errors: string[] = [];
-		try {
-			await runGit(
-				["clone", "-c", `http.proxy=${XNG_PROXY}`, "--filter=blob:none", "--no-checkout", XNG_HTTPS_URL, repoDir],
-				`clone ${XNG_HTTPS_URL}`
-			);
-			return repoDir;
-		} catch (e) {
-			errors.push(`https: ${gitFailure(e)}`);
-		}
-		try {
-			await runGit(["clone", "--filter=blob:none", "--no-checkout", XNG_URL, repoDir], `clone ${XNG_URL}`);
-			return repoDir;
-		} catch (e) {
-			errors.push(`ssh: ${gitFailure(e)}`);
-		}
-		throw new Error(`pullXng 两次尝试均失败：${errors.join("；")}`);
+		await runGit(
+			["clone", "-c", `http.proxy=${XNG_PROXY}`, "--filter=blob:none", "--no-checkout", XNG_REMOTE, repoDir],
+			`clone ${XNG_REMOTE}`
+		);
+		return repoDir;
 	}
 
 	// git 失败信息归类：超时 / 连接断开 / 其余 git 报错
@@ -134,10 +144,11 @@ export function createXngGit(exec: ExecFn) {
 		return res.code === 0 && res.stdout.trim() === "true";
 	}
 
-	// 一致性判定：git status --porcelain 为空（无改动、无未跟踪文件）即与 xng 版本一致
+	// 一致性判定：tracked 文件与 xng 版本一致（--untracked-files=no 忽略未跟踪文件；
+	// tracked 损失/编辑是风险，多出的未跟踪文件不算）
 	async function isXngClean(cacheDir?: string): Promise<boolean> {
 		if (!(await hasXngGit(cacheDir))) return false;
-		const res = await quietGit(xngRepoDir(cacheDir), ["status", "--porcelain"]);
+		const res = await quietGit(xngRepoDir(cacheDir), ["status", "--porcelain", "--untracked-files=no"]);
 		return res.code === 0 && res.stdout.trim() === "";
 	}
 
@@ -161,11 +172,113 @@ export function createXngGit(exec: ExecFn) {
 		);
 	}
 
-	function xngRepoDir(cacheDir?: string): string {
-		return join(cacheDir ?? defaultCacheDir(), REPO_REL);
+	// 仓库位置约定见模块级 xngRepoDir（<cacheDir>/searxng-server/searxng）
+
+	// 编排：幂等初始化。已存在（hasXngGit）则跳过；否则拉取 git → setupSparse；git 失败抛错
+	// 目录存在但非 git（如 .git 被删）：git clone 拒绝非空目录，改用 git init + fetch 往现有目录装 .git，不清残留
+	// 不物化工作树：建立文件内容（含清残留）归 fixXng 负责，init 只管"git 存在 + sparse 配好"
+	async function initXng(cacheDir?: string): Promise<XngResult> {
+		const repoDir = xngRepoDir(cacheDir);
+		if (await hasXngGit(cacheDir)) {
+			return { ok: true, repoDir, actions: [], note: "已存在，跳过" };
+		}
+		const actions: string[] = [];
+		if (existsSync(repoDir)) {
+			await initGitInDir(repoDir);
+			actions.push("init-git(装入现有目录)");
+		} else {
+			await pullXng(cacheDir);
+			actions.push("pull");
+		}
+		actions.push("setupSparse");
+		await setupSparse(cacheDir);
+		return { ok: true, repoDir, actions };
 	}
 
-	function defaultCacheDir(): string {
-		return join(homedir(), ".pi", "cache");
+	// 往现有目录装 .git：init + remote + config 持久化 + blobless fetch + 设置 origin/HEAD
+	// （clone -c 的持久化在这里用 config 手动等价写入）
+	async function initGitInDir(repoDir: string): Promise<void> {
+		await runGit(["-C", repoDir, "init"], "init");
+		await runGit(["-C", repoDir, "remote", "add", "origin", XNG_REMOTE], "remote add origin");
+		await runGit(["-C", repoDir, "config", "http.proxy", XNG_PROXY], "config http.proxy");
+		await runGit(["-C", repoDir, "config", "remote.origin.promisor", "true"], "config promisor");
+		await runGit(["-C", repoDir, "config", "remote.origin.partialclonefilter", "blob:none"], "config partialclonefilter");
+		await runGit(["-C", repoDir, "fetch", "--filter=blob:none", "origin"], "fetch origin");
+		await runGit(["-C", repoDir, "remote", "set-head", "origin", "-a"], "remote set-head origin -a");
+	}
+
+	// 编排：修复已存在的仓库，按需执行 setupSparse / checkout -f / update（ff-only）
+	// 本地修复失败返回 ok:false + reason；update 的网络失败不算修复失败（本地已修复，记 note）
+	// 仓库不存在属于存在层（hasXngGit/init）的职责，直接返回 ok:false
+	async function fixXng(cacheDir?: string): Promise<XngResult> {
+		const repoDir = xngRepoDir(cacheDir);
+		const actions: string[] = [];
+		if (!(await hasXngGit(cacheDir))) {
+			return {
+				ok: false,
+				repoDir,
+				actions,
+				reason: "仓库不存在或不是健康 git 工作树（请先 init）",
+			};
+		}
+		try {
+			// sparse 未激活 → 配置黑名单
+			if (!(await hasXngSparse(cacheDir))) {
+				await setupSparse(cacheDir);
+				actions.push("setupSparse");
+			}
+			// HEAD 缺失（clone 未 checkout）或有改动 → checkout -f 强制物化，丢弃本地改动
+			if (!(await headExists(cacheDir)) || !(await isXngClean(cacheDir))) {
+				await checkoutXng(cacheDir);
+				actions.push("checkout -f");
+			}
+		} catch (e) {
+			return { ok: false, repoDir, actions, reason: gitFailure(e) };
+		}
+		// 与上游对齐（ff-only）；网络失败不算修复失败——本地已修复，记 note
+		try {
+			await updateXng(cacheDir);
+			actions.push("update");
+		} catch (e) {
+			if (networkish(e)) {
+				return {
+					ok: true,
+					repoDir,
+					actions,
+					note: `本地已修复；与上游同步失败（网络）：${gitFailure(e)}`
+				};
+			}
+			return { ok: false, repoDir, actions, reason: gitFailure(e) };
+		}
+		return { ok: true, repoDir, actions, note: actions.length ? undefined : "无需修复" };
+	}
+
+	// 判别：sparse-checkout 是否已激活（list 有输出即激活；全量/未初始化都是空）
+	async function hasXngSparse(cacheDir?: string): Promise<boolean> {
+		const res = await quietGit(xngRepoDir(cacheDir), ["sparse-checkout", "list"]);
+		return res.code === 0 && res.stdout.trim() !== "";
+	}
+
+	// 判别：上游是否存在新版（ls-remote origin HEAD 与本地 HEAD 不同）；检查失败视为无新版
+	async function newerXngAvailable(cacheDir?: string): Promise<boolean> {
+		const repoDir = xngRepoDir(cacheDir);
+		const local = await quietGit(repoDir, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+		if (local.code !== 0) return false;
+		const remote = await quietGit(repoDir, ["ls-remote", "origin", "HEAD"]);
+		if (remote.code !== 0) return false;
+		const remoteHead = remote.stdout.trim().split(/\s+/)[0];
+		return Boolean(remoteHead) && remoteHead !== local.stdout.trim();
+	}
+
+	// 私有探测：HEAD 是否存在（区分"clone 完没 checkout 的空 index"与正常仓库）
+	async function headExists(cacheDir?: string): Promise<boolean> {
+		const res = await quietGit(xngRepoDir(cacheDir), ["rev-parse", "--verify", "--quiet", "HEAD"]);
+		return res.code === 0;
+	}
+
+	// 网络类失败判定（超时/连接断开/域名解析）：update 阶段这类失败记 note 而非 reason
+	function networkish(e: unknown): boolean {
+		const msg = e instanceof Error ? e.message : String(e);
+		return /timeout|timed out|SSL|EOF|reset|broken pipe|early close|could not resolve|failed to connect|connection/i.test(msg);
 	}
 }
