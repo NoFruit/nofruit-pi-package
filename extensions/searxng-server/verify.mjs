@@ -72,6 +72,9 @@ const segments = {
 		console.log("createVenv:", JSON.stringify(await py.createVenv()));
 		console.log("hasXngDeps:", JSON.stringify(await py.hasXngDeps()));
 		console.log("hasXngInstalled:", await py.hasXngInstalled());
+		console.log("hasXngExtras:", JSON.stringify(await py.hasXngExtras()));
+		console.log("installExtras:", await py.installExtras());
+		console.log("hasXngExtras 复查:", JSON.stringify(await py.hasXngExtras()));
 	},
 
 	// install-deps：用 .venv 的 pip 装齐 requirements 依赖（网络写操作，默认清华镜像源）

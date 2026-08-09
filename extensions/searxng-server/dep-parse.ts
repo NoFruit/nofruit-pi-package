@@ -3,25 +3,31 @@
 // 纯函数模块：不依赖 exec / pi 环境，可独立运行与单测。
 //
 // 对外接口：
-//   parseDepText(text, kind) -> DepRecord[]  解析 requirements（name==version，含 [extras]）或
-//     pip-list（表头两行 + "name  version" 行）文本；空行/注释/选项行/无法识别的行跳过
+//   parseDepText(text, kind) -> DepRecord[]  解析 requirements（name==version，含 [extras]）、
+//     pip-list（表头两行 + "name  version" 行）或 dir-list（每行一个文件名）文本；
+//     空行/注释/选项行/无法识别的行跳过
 //   diffDeps(a, b) -> DepDiff  基于规范化包名的集合关系（onlyA / onlyB / both），version 不参与
 
 // 统一数据格式：包名（规范化）+ 版本串
 export interface DepRecord {
-	/** 规范化包名：小写、[-_.]+ 归一为 -（PEP 503） */
+	/** 包名：pip 类为规范化包名（小写、[-_.]+ 归一为 -，PEP 503）；dir-list 为原文件名（不规范化） */
 	name: string;
 	/** 版本：requirements 侧为约束串（如 "==0.28.1"），pip 侧为已装版本（如 "25.0.1"）；无版本时省略 */
 	version?: string;
 }
 
-export type DepTextKind = "requirements" | "pip-list";
+export type DepTextKind = "requirements" | "pip-list" | "dir-list";
 
-// 解析：把 requirements / pip list 文本解析为统一 DepRecord[]；无法识别的行跳过
+// 解析：把 requirements / pip list / dir-list 文本解析为统一 DepRecord[]；无法识别的行跳过
 export function parseDepText(text: string, kind: DepTextKind): DepRecord[] {
 	const out: DepRecord[] = [];
 	for (const line of text.split(/\r?\n/)) {
-		const rec = kind === "requirements" ? parseRequirementLine(line) : parsePipListLine(line);
+		const rec =
+			kind === "requirements"
+				? parseRequirementLine(line)
+				: kind === "pip-list"
+					? parsePipListLine(line)
+					: parseDirListLine(line);
 		if (rec) out.push(rec);
 	}
 	return out;
@@ -50,6 +56,12 @@ function parsePipListLine(line: string): DepRecord | null {
 	return rec;
 }
 
+// dir-list 单行：跳过空行与 . 开头的隐藏文件；name = 原文件名（不规范化）
+function parseDirListLine(line: string): DepRecord | null {
+	const s = line.trim();
+	if (!s || s.startsWith(".")) return null;
+	return { name: s };
+}
 // 规范化包名：小写、[-_.]+ 归一为 -（PEP 503）
 function normalizeName(name: string): string {
 	return name.replace(/[-_.]+/g, "-").toLowerCase();

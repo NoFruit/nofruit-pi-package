@@ -14,8 +14,7 @@ export function createXngCheck(exec: ExecFn) {
 	const py = createXngPy(exec);
 	return { selfCheckXng };
 
-	// 自检：仓库块（git 存在→sparse）→ 文件块（tracked 一致性）→ py 块（python/venv/依赖/本体）；
-	// 每块判别不过才修复，修复后闭环复查；版本提示仅 note；失败抛错
+	// 自检：仓库块（git 存在→sparse）→ 文件块（tracked 一致性）→ py 块（python/venv/依赖/本体/附加模块）；
 	async function selfCheckXng(cacheDir?: string): Promise<XngResult> {
 		const repoDir = xngRepoDir(cacheDir);
 		const actions: string[] = [];
@@ -72,6 +71,13 @@ export function createXngCheck(exec: ExecFn) {
 			actions.push("installXng");
 			if (!(await py.hasXngInstalled(cacheDir))) {
 				throw new Error("闭环复查失败：本体安装后仍未装入");
+			}
+		}
+		if (!(await py.hasXngExtras(cacheDir)).complete) {
+			await py.installExtras(cacheDir);
+			actions.push("installExtras");
+			if (!(await py.hasXngExtras(cacheDir)).complete) {
+				throw new Error("闭环复查失败：附加模块安装后仍缺失");
 			}
 		}
 
