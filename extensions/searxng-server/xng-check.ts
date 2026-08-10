@@ -6,7 +6,12 @@
 // 对外接口：createXngCheck(exec) 返回基础积木；exec 形如 pi.exec：
 //   exec(cmd, args, opts?) -> Promise<{ stdout, stderr, code }>
 //   selfCheckXng(cacheDir?) -> Promise<XngResult> 自检全流程；失败抛错
-import { createXngGit, xngRepoDir, type ExecFn, type XngResult } from "./xng-git.ts";
+import {
+	createXngGit,
+	xngRepoDir,
+	type ExecFn,
+	type XngResult,
+} from "./xng-git.ts";
 import { createXngPy } from "./xng-py.ts";
 
 export function createXngCheck(exec: ExecFn) {

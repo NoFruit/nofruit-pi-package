@@ -227,6 +227,6 @@ export function createXngPy(exec: ExecFn) {
 }
 
 // 附加模块目录：<cacheDir>/searxng-server/extra-modules（相对 xng 仓库推导，跟随 cacheDir 语义）
-function xngExtraDir(cacheDir?: string): string {
+export function xngExtraDir(cacheDir?: string): string {
 	return join(xngRepoDir(cacheDir), XNG_EXTRA_REL);
 }
