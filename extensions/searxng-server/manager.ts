@@ -5,8 +5,8 @@
 // 用法：node manager.ts [秒数]——秒数缺省用 DEFAULT_TTL_SECONDS。
 
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { openSync } from "node:fs";
-import { createServer } from "node:net";
+import { openSync, writeFileSync, appendFileSync } from "node:fs";
+import { createServer, connect } from "node:net";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { xngRepoDir } from "./xng-git.ts";
@@ -16,7 +16,7 @@ import { xngExtraDir } from "./xng-py.ts";
 // PIPE_NAME 与 launcher.ts 保持一致（一处改动需同步）
 const PIPE_NAME = "\\\\.\\pipe\\xng-manager";
 // xng 服务监听端口（搜索工具统一契约；SEARXNG_PORT 环境变量可覆盖）
-const XNG_PORT = 8888;
+const XNG_PORT = Number(process.env.SEARXNG_PORT ?? 8888);
 // 倒计时检查周期
 const CHECK_INTERVAL_MS = 1000;
 // xng 守护探活周期（探出消失后快速重启）
@@ -25,10 +25,31 @@ const XNG_WATCH_INTERVAL_MS = 5000;
 // xng 启动日志：<cacheDir>/searxng-server/xng.log（追加；排查启动失败用）
 const xngLogPath = (repoDir: string) => join(repoDir, "..", "xng.log");
 
+// xng 覆盖设置：启动时顺手写运行时文件（与 xng.log 同级）并注入 SEARXNG_SETTINGS_PATH。
+// 字段维护为 const（暂无独立 yml）：当前 search.formats 开 json（pi-web-access 固定 format=json）+ 引擎出网代理。
+// 代理地址单源（settings 注入与可用性探测共用）；httpx 挂载语法 all:// 匹配 http/https。
+// 关键语义：settings_loader 文件模式默认整体替换（不带 use_default_settings: true 会丢全部默认键），
+// 必须带 use_default_settings: true 才与默认 settings.yml 合并；合并时列表/标量整体替换 → formats 必须列全。
+const PROXY_HOST = "127.0.0.1";
+const PROXY_PORT = 7890;
+const SETTINGS_OVERRIDE_YAML = `use_default_settings: true
+search:
+  formats:
+    - html
+    - json
+outgoing:
+  proxies:
+    all://:
+      - http://${PROXY_HOST}:${PROXY_PORT}
+`;
+
 // 启动 xng（.venv python -m searx.webapp；env 注入 SEARXNG_SECRET + PYTHONPATH=附加模块目录；cwd=仓库）；
 // 返回 xng 进程引用（持有者即唯一管理者）；spawn 失败抛错。前置假设：调用方是单例（xng 唯一性由 manager 唯一性保证）
 function startXng(cacheDir?: string): ChildProcess {
 	const repoDir = xngRepoDir(cacheDir);
+	// 顺手写覆盖设置（const 字段级；与 xng.log 同级运行时文件）供 SEARXNG_SETTINGS_PATH 注入合并
+	const settingsRuntimePath = join(repoDir, "..", "settings.yml");
+	writeFileSync(settingsRuntimePath, SETTINGS_OVERRIDE_YAML);
 	const logFd = openSync(xngLogPath(repoDir), "a");
 	const child = spawn(
 		join(repoDir, ".venv", "Scripts", "python.exe"),
@@ -39,6 +60,8 @@ function startXng(cacheDir?: string): ChildProcess {
 			env: {
 				...process.env,
 				SEARXNG_SECRET: randomBytes(32).toString("hex"),
+				// 覆盖设置注入（const 运行时文件，与默认 settings.yml 合并）
+				SEARXNG_SETTINGS_PATH: settingsRuntimePath,
 				// pwd 桩等 file 类附加模块经 PYTHONPATH 进程级注入（追加原值防覆盖）
 				PYTHONPATH: [xngExtraDir(cacheDir), process.env.PYTHONPATH]
 					.filter(Boolean)
@@ -70,6 +93,30 @@ async function xngOk(cacheDir?: string): Promise<boolean> {
 	}
 }
 
+// 独立小功能：启动时快速探测系统代理可用性（本地 TCP 短超时，不阻塞 xng 启动）；
+// 不可达 → xng.log 追加提示行（manager stdio 被 ignore，console 无处可见，只能落文件）
+function proxyOk(timeoutMs = 1000): Promise<boolean> {
+	return new Promise((resolve) => {
+		const sock = connect({ host: PROXY_HOST, port: PROXY_PORT });
+		let done = false;
+		const finish = (ok: boolean) => {
+			if (done) return;
+			done = true;
+			sock.destroy();
+			resolve(ok);
+		};
+		sock.once("connect", () => finish(true));
+		sock.once("error", () => finish(false));
+		sock.setTimeout(timeoutMs, () => finish(false));
+	});
+}
+async function noteProxyIfDown(repoDir: string): Promise<void> {
+	if (await proxyOk()) return;
+	appendFileSync(
+		xngLogPath(repoDir),
+		`[manager] proxy ${PROXY_HOST}:${PROXY_PORT} unreachable, remember to turn it on (engines will fail)\n`,
+	);
+}
 const DEFAULT_TTL_SECONDS = 60;
 
 const ttlSeconds = Number(process.argv[2] ?? DEFAULT_TTL_SECONDS);
@@ -136,6 +183,8 @@ server.on("error", (e) => {
 // listen 成功 = 我是单例：拉起 xng（持有进程引用）+ 启动倒计时检查
 server.listen(PIPE_NAME, () => {
 	xngChild = startXng();
+	// 独立探测：代理不可达 → 追加提示到 xng.log（异步，不阻塞 xng 启动）
+	void noteProxyIfDown(xngRepoDir());
 	console.log(
 		`[manager] pid=${process.pid} xng=${xngChild.pid} singleton up, ttl ${ttlSeconds}s`,
 	);

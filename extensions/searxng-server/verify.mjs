@@ -70,6 +70,7 @@ const segments = {
 		);
 	},
 
+
 	// xng-py：python 版本探测 + venv 创建（已存在则跳过）
 	"xng-py": async () => {
 		const py = createXngPy(exec);
@@ -181,6 +182,88 @@ const segments = {
 			),
 		);
 		if (failed) process.exit(1);
+	},
+	adaptor: async () => {
+		// 注入判定：勾选 + 健康 → 注入本地地址；不健康 → 恢复原值/删除（回退默认通路）
+		const key = "SEARXNG_BASE_URL";
+		const saved = process.env[key];
+		const { rmSync } = await import("node:fs");
+		const { join: j } = await import("node:path");
+		const { tmpdir } = await import("node:os");
+		const cfgPath = j(tmpdir(), `xng-adaptor-${process.pid}.json`);
+		process.env.XNG_ADAPTOR_CONFIG = cfgPath; // 持久化写临时文件，不碰真实配置
+		delete process.env[key];
+		let failed = 0;
+		const check = (label, want) => {
+			const got = process.env[key] ?? null;
+			const ok = got === want;
+			if (!ok) failed++;
+			console.log(`${ok ? "PASS" : "FAIL"} ${label}: ${got} (want ${want})`);
+		};
+		const m1 = await import("./adaptor.ts");
+		// 默认未勾选：健康也不干预（保持消费者默认通路）
+		m1.onToolCall("web_search", { managerAlive: true, xngOk: true });
+		check("not routed -> no injection", null);
+		// 勾选后：每次调用独立判定
+		m1.applyConfig([{ package: "pi-web-access", enabled: true }]);
+		m1.onToolCall("web_search", { managerAlive: false, xngOk: false });
+		check("routed + offline -> no injection", null);
+		m1.onToolCall("web_search", { managerAlive: true, xngOk: true });
+		check("routed + online -> inject local", m1.XNG_BASE_URL);
+		m1.onToolCall("web_search", { managerAlive: true, xngOk: false });
+		check("routed + degraded -> revert", null);
+		m1.onToolCall("other_tool", { managerAlive: true, xngOk: true });
+		check("other tool untouched", null);
+		// provider 覆盖（B 方案）：健康 → input.provider = "searxng"；不健康 → 恢复调用者原值/删除
+		let inpFailed = 0;
+		const inpCheck = (label, inp, want) => {
+			const got = inp.provider ?? null;
+			const ok = got === want;
+			if (!ok) inpFailed++;
+			console.log(`${ok ? "PASS" : "FAIL"} ${label}: ${got} (want ${want})`);
+		};
+		const inp1 = {};
+		m1.onToolCall("web_search", { managerAlive: true, xngOk: true }, inp1);
+		inpCheck("healthy -> provider searxng", inp1, "searxng");
+		const inp2 = { provider: "anysearch" };
+		m1.onToolCall("web_search", { managerAlive: false, xngOk: false }, inp2);
+		inpCheck("unhealthy -> restore provider", inp2, "anysearch");
+		const inp3 = { provider: "anysearch" };
+		m1.onToolCall("web_search", { managerAlive: true, xngOk: true }, inp3);
+		inpCheck("healthy overrides explicit provider", inp3, "searxng");
+		const inp4 = {};
+		m1.onToolCall("web_search", { managerAlive: false, xngOk: false }, inp4);
+		inpCheck("unhealthy with no original -> provider deleted", inp4, null);
+		const inp5 = {};
+		m1.onToolCall("other_tool", { managerAlive: true, xngOk: true }, inp5);
+		inpCheck("other tool provider untouched", inp5, null);
+		// 原值保留：消费者自带 SEARXNG_BASE_URL → 不健康时恢复原值（勾选跨实例持久化）
+		process.env[key] = "https://remote.example.com";
+		const m2 = await import("./adaptor.ts?fresh");
+		m2.onToolCall("web_search", { managerAlive: false, xngOk: false });
+		check("capture original on first call", "https://remote.example.com");
+		m2.onToolCall("web_search", { managerAlive: true, xngOk: true });
+		check("inject over original", m2.XNG_BASE_URL);
+		m2.onToolCall("web_search", { managerAlive: false, xngOk: false });
+		check("unhealthy restores original", "https://remote.example.com");
+		// 服务恢复自动重新转接（勾选持久、无失败冻结）：新实例读盘勾选 → 健康即注入
+		delete process.env[key];
+		const m3 = await import("./adaptor.ts?reload");
+		m3.onToolCall("web_search", { managerAlive: true, xngOk: true });
+		check("routed persisted across reload -> inject", m3.XNG_BASE_URL);
+		m3.onToolCall("web_search", { managerAlive: false, xngOk: false });
+		check("reloaded + unhealthy -> revert", null);
+		// 取消勾选 → 完全放行默认通路
+		m3.applyConfig([]);
+		m3.onToolCall("web_search", { managerAlive: true, xngOk: true });
+		check("unrouted after apply -> no injection", null);
+		const inp6 = {};
+		m3.onToolCall("web_search", { managerAlive: true, xngOk: true }, inp6);
+		inpCheck("unrouted -> input untouched", inp6, null);
+		rmSync(cfgPath, { force: true });
+		delete process.env.XNG_ADAPTOR_CONFIG;
+		if (saved === undefined) delete process.env[key]; else process.env[key] = saved;
+		if (failed || inpFailed) process.exit(1);
 	},
 	fix: async () => {
 		const check = createXngCheck(exec);

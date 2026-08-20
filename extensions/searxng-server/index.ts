@@ -1,11 +1,14 @@
 // 定位：searxng-server 扩展入口——判断层接线（watch 事实 + 文件哨兵）→ 状态机（status.ts）→ 状态行渲染。
-// 命令：start（预判环境）| stop | status | fix（容错重建）。
+// 命令：start（预判环境）| stop | status | fix（容错重建）| config（路由勾选菜单）。
+// 转接：tool_call 时点判定（adaptor.ts）——勾选插件且健康 → 覆盖调用者 provider 为 searxng + 注入
+// SEARXNG_BASE_URL，本次搜索走本地；不健康 → 双恢复回退默认通路；每次搜索独立判定。
 // 检查频率（无后台全量轮询）：全量 probe 仅在启动、offline 切换瞬间、哨兵变化、命令触发时跑；
 // offline 周期仅 5 stat 哨兵（零进程零扫描），哨兵丢失/恢复才升级全量。
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -17,6 +20,8 @@ import {
 	stopWatch,
 	type ManagerFacts,
 } from "./launcher.ts";
+import { onToolCall, configRows, applyConfig } from "./adaptor.ts";
+import { showConfig } from "./config-ui.ts";
 import { createXngCheck } from "./xng-check.ts";
 import { xngRepoDir } from "./xng-git.ts";
 import type { ExecFn } from "./xng-git.ts";
@@ -148,6 +153,21 @@ async function doStatus(): Promise<void> {
 	);
 }
 
+// 配置菜单：勾选要转接的搜索插件（custom TUI；非 TUI 模式降级提示）；结果持久化
+async function doConfig(ctx: ExtensionCommandContext): Promise<void> {
+	if (!ui || ctx.mode !== "tui") {
+		ui?.notify("config UI requires TUI mode (interactive)", "error");
+		return;
+	}
+	const result = await showConfig(ui, configRows());
+	if (!result) {
+		ui?.notify("config cancelled (routing unchanged)", "info");
+		return;
+	}
+	const on = applyConfig(result);
+	ui.notify(on.length ? `routing: ${on.join(", ")}` : "routing: none (all default)", "info");
+}
+
 // 修复：按仓库→文件→py 流程重建环境；分块容错（错误告知、跳过依赖块、不中断）；完成后复查
 async function doFix(): Promise<void> {
 	fixing = true;
@@ -187,7 +207,7 @@ export default function (pi: ExtensionAPI) {
 		pi.exec(cmd, args, { timeout: opts?.timeout })) as unknown as ExecFn;
 
 	pi.registerCommand("searxng-server", {
-		description: "xng service control: start | stop | status | fix",
+		description: "xng service control: start | stop | status | fix | config",
 		handler: async (args, ctx) => {
 			ui = ctx.ui;
 			const sub = (args || "").split(/\s+/)[0];
@@ -195,11 +215,17 @@ export default function (pi: ExtensionAPI) {
 			else if (sub === "stop") await doStop();
 			else if (sub === "status") await doStatus();
 			else if (sub === "fix") await doFix();
-			else ui?.notify("usage: /searxng-server start|stop|status|fix", "info");
+			else if (sub === "config") await doConfig(ctx);
+			else ui?.notify("usage: /searxng-server start|stop|status|fix|config", "info");
 		},
 	});
 
 	// watch 常驻：manager 出现自动连上+心跳，消失自动断开；每 tick 回调事实（不自动启动 xng）
+	// 转接：每次搜索调用前做注入判定（健康 → 本地 xng（env + provider 覆盖）；不健康 → 恢复默认通路）
+	pi.on("tool_call", (event) => {
+		onToolCall(event.toolName, facts, event.input);
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		ui = ctx.ui;
 		startWatch((f) => {
