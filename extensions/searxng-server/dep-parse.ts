@@ -46,16 +46,20 @@ function parseRequirementLine(line: string): DepRecord | null {
 }
 
 // pip list 单行：跳过表头（Package Version）与分隔线，其余 "name  version"（空白分隔）
+// pip list 单行：跳过表头（Package Version [Editable project location] 三列）与分隔线，其余 "name  version"（空白分隔）
 function parsePipListLine(line: string): DepRecord | null {
 	const s = line.trim();
-	if (!s || /^Package\s+Version$/.test(s) || /^-+\s+-+$/.test(s)) return null;
+	if (!s) return null;
+	// 表头：第一词 Package + 第二词 Version（editable 安装会多第三列 Editable project location，故不用 ^$ 全匹配）
 	const parts = s.split(/\s+/);
+	if (parts[0].toLowerCase() === "package" && parts[1]?.toLowerCase() === "version") return null;
+	// 分隔线：纯 -_ 字符（列数不定，逐词判断不可靠）
+	if (/^[\s\-_]+$/.test(s)) return null;
 	if (parts.length < 2) return null;
 	const rec: DepRecord = { name: normalizeName(parts[0]) };
 	if (parts[1]) rec.version = parts[1];
 	return rec;
 }
-
 // dir-list 单行：跳过空行与 . 开头的隐藏文件；name = 原文件名（不规范化）
 function parseDirListLine(line: string): DepRecord | null {
 	const s = line.trim();

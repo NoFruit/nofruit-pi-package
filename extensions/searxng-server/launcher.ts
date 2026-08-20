@@ -131,12 +131,16 @@ export function stopManager(timeoutMs = 3000): Promise<boolean> {
 
 // —— manager 连接管理（watch）——
 
-export type ManagerWatchState = "online" | "degraded" | "offline";
+// watch 回调产出的事实：manager 单例存活 + xng 是否正常（状态机层合成唯一状态）
+export interface ManagerFacts {
+	managerAlive: boolean;
+	xngOk: boolean;
+}
 
 let managerConn: Socket | null = null;
 let watchTimer: ReturnType<typeof setInterval> | undefined;
 let lastHeartbeatAt = 0;
-let onState: ((s: ManagerWatchState) => void) | undefined;
+let onFacts: ((f: ManagerFacts) => void) | undefined;
 let tickBusy = false;
 
 // 纯连接（不 spawn）：pipe 可连则返回连接，否则 null
@@ -155,7 +159,7 @@ function tryConnect(timeoutMs = 2000): Promise<Socket | null> {
 	});
 }
 
-// 周期 tick：探测 manager → 自动连接/断开 → 问 xng → 回调状态 → 到周期发心跳
+// 周期 tick：探测 manager → 自动连接/断开 → 问 xng → 回调事实 → 到周期发心跳
 async function watchTick(): Promise<void> {
 	if (tickBusy) return;
 	tickBusy = true;
@@ -165,7 +169,7 @@ async function watchTick(): Promise<void> {
 				managerConn.destroy();
 				managerConn = null;
 			}
-			onState?.("offline");
+			onFacts?.({ managerAlive: false, xngOk: false });
 			return;
 		}
 		if (!managerConn || managerConn.destroyed) {
@@ -173,7 +177,7 @@ async function watchTick(): Promise<void> {
 			lastHeartbeatAt = 0;
 		}
 		const xOk = await xngStatus();
-		onState?.(xOk ? "online" : "degraded");
+		onFacts?.({ managerAlive: true, xngOk: xOk });
 		if (managerConn && Date.now() - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
 			sendHeartbeat(managerConn);
 			lastHeartbeatAt = Date.now();
@@ -184,9 +188,9 @@ async function watchTick(): Promise<void> {
 }
 
 // 开始周期感知（幂等）：manager 出现自动连上并心跳，消失自动断开；不 spawn（启动权在 start 命令）。
-// 立即跑首个 tick（首次状态不等到周期结束才出现）
-export function startWatch(onStateChange: (s: ManagerWatchState) => void, intervalMs = 5000): void {
-	onState = onStateChange;
+// 每 tick 回调事实（managerAlive/xngOk）；立即跑首个 tick。
+export function startWatch(onFactsChange: (f: ManagerFacts) => void, intervalMs = 5000): void {
+	onFacts = onFactsChange;
 	if (watchTimer) return;
 	void watchTick();
 	watchTimer = setInterval(watchTick, intervalMs);
@@ -202,5 +206,5 @@ export function stopWatch(): void {
 		managerConn.destroy();
 		managerConn = null;
 	}
-	onState = undefined;
+	onFacts = undefined;
 }

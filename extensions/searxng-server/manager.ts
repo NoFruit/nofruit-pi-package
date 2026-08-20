@@ -48,7 +48,7 @@ function startXng(cacheDir?: string): ChildProcess {
 		},
 	);
 	if (child.pid === undefined) {
-		throw new Error("xng spawn 失败：无 pid");
+		throw new Error("xng spawn failed: no pid");
 	}
 	return child;
 }
@@ -85,10 +85,10 @@ let lastHeartbeat = Date.now();
 function restartXng(): ChildProcess {
 	if (xngChild !== undefined && xngChild.exitCode === null) {
 		stopXng(xngChild.pid!);
-		console.log(`[manager] xng ${xngChild.pid} 守护关闭`);
+		console.log(`[manager] xng ${xngChild.pid} stopped by guard`);
 	}
 	xngChild = startXng();
-	console.log(`[manager] xng ${xngChild.pid} 守护重启`);
+	console.log(`[manager] xng ${xngChild.pid} restarted by guard`);
 	return xngChild;
 }
 
@@ -97,15 +97,15 @@ function shutdown(): void {
 	if (xngChild !== undefined && xngChild.exitCode === null) {
 		try {
 			stopXng(xngChild.pid!);
-			console.log(`[manager] xng ${xngChild.pid} 已关闭`);
+			console.log(`[manager] xng ${xngChild.pid} closed`);
 		} catch (e) {
 			console.error(
-				`[manager] 关闭 xng 失败: ${e instanceof Error ? e.message : String(e)}`,
+				`[manager] failed to stop xng: ${e instanceof Error ? e.message : String(e)}`,
 			);
 			process.exit(1);
 		}
 	}
-	console.log(`[manager] pid=${process.pid} 倒计时耗尽，自毁`);
+	console.log(`[manager] pid=${process.pid} ttl expired, self-destruct`);
 	process.exit(0);
 }
 
@@ -127,7 +127,7 @@ const server = createServer((socket) => {
 server.on("error", (e) => {
 	if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
 		// 已有 manager 占住 pipe：让位退出（不启动 xng，不碰任何进程）
-		console.log(`[manager] 已有 manager 占住 ${PIPE_NAME}，让位退出`);
+		console.log(`[manager] another manager holds ${PIPE_NAME}, yielding`);
 		process.exit(0);
 	}
 	throw e;
@@ -137,7 +137,7 @@ server.on("error", (e) => {
 server.listen(PIPE_NAME, () => {
 	xngChild = startXng();
 	console.log(
-		`[manager] pid=${process.pid} xng=${xngChild.pid} 单例就位，倒计时 ${ttlSeconds}s 开始`,
+		`[manager] pid=${process.pid} xng=${xngChild.pid} singleton up, ttl ${ttlSeconds}s`,
 	);
 	// 倒计时检查
 	setInterval(() => {
@@ -153,7 +153,7 @@ server.listen(PIPE_NAME, () => {
 			}
 		} catch (e) {
 			console.error(
-				`[manager] 守护重启失败: ${e instanceof Error ? e.message : String(e)}`,
+				`[manager] guard restart failed: ${e instanceof Error ? e.message : String(e)}`,
 			);
 		}
 	}, XNG_WATCH_INTERVAL_MS);

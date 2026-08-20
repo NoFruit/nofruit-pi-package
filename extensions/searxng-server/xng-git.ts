@@ -46,15 +46,6 @@ export interface ExecResult {
 	code: number;
 }
 
-export interface XngResult {
-	ok: boolean;
-	repoDir: string;
-	actions: string[];
-	/** 非致命提示（已存在跳过、本地已修复但同步失败等） */
-	note?: string;
-	/** 修复失败原因（ok=false 时给出） */
-	reason?: string;
-}
 
 export type ExecFn = (
 	cmd: string,
