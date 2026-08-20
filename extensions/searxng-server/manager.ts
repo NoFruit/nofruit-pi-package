@@ -38,6 +38,10 @@ search:
     - html
     - json
 outgoing:
+# 走代理延迟高，默认 3s 不够 → 放宽引擎默认超时（键在 outgoing 块；标量覆盖合并安全）
+  request_timeout: 10
+# 代理间歇掐连接（TLS EOF/ConnectError）→ 失败重试吸收抖动（默认 0 一次性）
+  retries: 3
   proxies:
     all://:
       - http://${PROXY_HOST}:${PROXY_PORT}
