@@ -228,9 +228,14 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		ui = ctx.ui;
+		// resume 时模块实例复用：lastState 残留上次状态 → session_shutdown 已清掉状态行，
+		// 若状态未变化 syncStatus 会提前返回，指示行不再出现 → 置空强制重渲染
+		lastState = null;
 		startWatch((f) => {
 			void onWatchFacts(f);
 		});
+		// 立即按当前 facts 渲染一次（不等 probe/首个 watch tick），初始/resume 即显示
+		syncStatus();
 		// 启动自检：初始默认 offline，全量 probe 一次后按实刷新
 		void refreshFiles();
 	});
